@@ -2,7 +2,6 @@ mod process;
 
 use process::MMapPath;
 use process::ProcessManager;
-//use procfs::process::MMapPath;
 
 fn main() {
     let process_manager = ProcessManager::new("ac_client").unwrap();
