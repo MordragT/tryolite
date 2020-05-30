@@ -53,6 +53,7 @@ impl ProcessManager {
     }
 
     /// Finds a signature and returns its address
+    /// Supports a ? Wildcard
     pub fn find<T: Into<Vec<u8>>>(
         &self,
         signature: T,
@@ -88,11 +89,13 @@ impl ProcessManager {
                 Ok(mut vec) => {
                     let mut offset = std::mem::size_of::<T>();
                     while vec.len() >= signature.len() {
-                        if vec.ends_with(signature.as_slice()) {
-                            return Ok(start + offset);
+                        for (v, s) in vec.iter().zip(signature.iter()).rev() {
+                            if s != &b'?' && v != s {
+                                break;
+                            }
                         }
-                        vec.pop();
                         offset -= 1;
+                        vec.pop();
                     }
                     start += std::mem::size_of::<T>();
                 }

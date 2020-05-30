@@ -6,7 +6,7 @@ fn main() {
     let response = process_manager.read::<u8>(0x5588369b6da8).unwrap();
     println!("{:?}", response);
     let find = process_manager
-        .find::<&[u8]>(b"\xff\x8b\xff\xd9\xff\x51", Some(MMapPath::Heap))
+        .find::<&[u8]>(b"\xff\x8b??\xd9\xff\x51", Some(MMapPath::Heap))
         .unwrap();
     println!("{:X}", find);
     let write = process_manager
