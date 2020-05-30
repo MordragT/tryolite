@@ -1,7 +1,5 @@
-mod process;
-
-use process::MMapPath;
-use process::ProcessManager;
+use tryolib::process::MMapPath;
+use tryolib::process::ProcessManager;
 
 fn main() {
     let process_manager = ProcessManager::new("ac_client").unwrap();
@@ -11,6 +9,14 @@ fn main() {
         .find::<&[u8]>(b"\xff\x8b\xff\xd9\xff\x51", Some(MMapPath::Heap))
         .unwrap();
     println!("{:X}", find);
-    let write = process_manager.write(find, b"\xff\xff\xff\xff").unwrap();
+    let write = process_manager
+        .write::<&[u8]>(find, b"\xff\xff\xff\xff")
+        .unwrap();
     println!("{}", write);
+
+    loop {
+        process_manager
+            .write::<&[u8]>(0x5588369b6da8, &20u32.to_le_bytes())
+            .unwrap();
+    }
 }

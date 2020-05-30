@@ -39,12 +39,13 @@ impl ProcessManager {
     }
 
     /// Returns how many bytes were written
-    pub fn write(&self, address: usize, payload: &[u8]) -> Result<usize, &str> {
+    pub fn write<T: Into<Vec<u8>>>(&self, address: usize, payload: T) -> Result<usize, &str> {
         let remote = [RemoteIoVec {
             base: address,
-            len: payload.len(),
+            len: std::mem::size_of::<T>(),
         }];
-        let local = [IoVec::from_slice(payload)];
+        let payload: Vec<u8> = payload.into();
+        let local = [IoVec::from_slice(payload.as_slice())];
         match uio::process_vm_writev(Pid::from_raw(self.process.pid), &local, &remote) {
             Ok(x) if x > 0 => return Ok(x),
             _ => return Err("Process memory could not be written."),
