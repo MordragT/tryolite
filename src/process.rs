@@ -88,23 +88,17 @@ impl ProcessManager {
     ) -> Result<usize, &str> {
         let mut signatures = Vec::new();
         let mut offset = 0;
-        for sig in signature.split("::") {
-            if sig != "" {
-                let mut sig_hex = usize::from_str_radix(sig, 16)
-                    .unwrap()
-                    .to_be_bytes()
-                    .to_vec();
-                //sig_hex.retain(|&x| x != 0);
-                signatures.push((sig_hex, offset));
-                offset = 0;
-            }
-            offset += 1;
-        }
-        for x in signatures.clone() {
-            for y in x.0 {
-                println!("{:X}", y);
+        for sig in signature.split_whitespace() {
+            match usize::from_str_radix(sig, 16) {
+                Ok(val) => {
+                    let sig_hex = *val.to_be_bytes().to_vec().last().unwrap();
+                    signatures.push((sig_hex, offset));
+                    offset = 0;
+                }
+                Err(_) => offset += 1,
             }
         }
+        println!("{:?}", signatures);
 
         let (mut start, end) = self.find_module_address(module).unwrap();
 
@@ -112,20 +106,23 @@ impl ProcessManager {
             match self.read::<T>(start) {
                 Err(_) => break,
                 Ok(mut vec) => {
+                    let mut offset = vec.len();
                     for (sig, off) in signatures.iter().rev() {
                         while vec.len() >= signature.len() {
-                            if vec.ends_with(sig) {
+                            if vec.last().unwrap() == sig {
                                 if *off == 0 {
-                                    return Ok(start + vec.len());
+                                    return Ok(start + offset + 1);
                                 }
                                 for _ in 0..*off {
                                     vec.pop();
                                 }
+                                break;
                             }
                             vec.pop();
+                            offset -= 1;
                         }
-                        start += std::mem::size_of::<Vec<u8>>();
                     }
+                    start += std::mem::size_of::<Vec<u8>>();
                 }
             }
         }
