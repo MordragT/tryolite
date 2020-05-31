@@ -7,7 +7,7 @@ This library is under heavy development and i do not recommend using it.
 ## Usage
 
 **Note** this example may not be up-to-date.
-Consider looking at the code in `src/bin/main.rs`
+Consider looking at the code in `examples/`
 
 ```rust
 use tryolib::process::MMapPath;

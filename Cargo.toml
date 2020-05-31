@@ -13,7 +13,3 @@ procfs = "0.7.9"
 [lib]
 name = "tryolib"
 path = "src/lib.rs"
-
-[[bin]]
-name = "tryolin"
-path = "src/bin/main.rs"

@@ -53,35 +53,12 @@ impl ProcessManager {
     }
 
     /// Finds a signature and returns its address
-    /// Supports a ? Wildcard
     pub fn find<T: Into<Vec<u8>>>(
         &self,
         signature: T,
         module: Option<MMapPath>,
     ) -> Result<usize, &str> {
-        let (mut start, end) = match module {
-            Some(module_path) => {
-                let mut result = (0, 0);
-                for map in self.maps.iter() {
-                    if map.pathname == module_path {
-                        result = (map.address.0 as usize, map.address.1 as usize);
-                        break;
-                    }
-                }
-                result
-            }
-            None => {
-                let mut result = (0, 0);
-                for map in self.maps.iter() {
-                    if map.perms == "r-xp" {
-                        result = (map.address.0 as usize, map.address.1 as usize);
-                        break;
-                    }
-                }
-                result
-            }
-        };
-
+        let (mut start, end) = self.find_module_address(module).unwrap();
         let signature: Vec<u8> = signature.into();
 
         while start < end {
@@ -89,13 +66,11 @@ impl ProcessManager {
                 Ok(mut vec) => {
                     let mut offset = std::mem::size_of::<T>();
                     while vec.len() >= signature.len() {
-                        for (v, s) in vec.iter().zip(signature.iter()).rev() {
-                            if s != &b'?' && v != s {
-                                break;
-                            }
+                        if vec.ends_with(signature.as_slice()) {
+                            return Ok(start + offset);
                         }
-                        offset -= 1;
                         vec.pop();
+                        offset -= 1;
                     }
                     start += std::mem::size_of::<T>();
                 }
@@ -103,5 +78,78 @@ impl ProcessManager {
             }
         }
         Err("Signature not found.")
+    }
+    /// Supports wildcards with :: but only takes &str
+    /// find_with_wildcard("00 :: a9 :: 00 :: 32")
+    pub fn find_with_wildcard<T>(
+        &self,
+        signature: &str,
+        module: Option<MMapPath>,
+    ) -> Result<usize, &str> {
+        let mut signatures = Vec::new();
+        let mut offset = 0;
+        for sig in signature.split("::") {
+            if sig != "" {
+                let mut sig_hex = usize::from_str_radix(sig, 16)
+                    .unwrap()
+                    .to_be_bytes()
+                    .to_vec();
+                //sig_hex.retain(|&x| x != 0);
+                signatures.push((sig_hex, offset));
+                offset = 0;
+            }
+            offset += 1;
+        }
+        for x in signatures.clone() {
+            for y in x.0 {
+                println!("{:X}", y);
+            }
+        }
+
+        let (mut start, end) = self.find_module_address(module).unwrap();
+
+        while start < end {
+            match self.read::<T>(start) {
+                Err(_) => break,
+                Ok(mut vec) => {
+                    for (sig, off) in signatures.iter().rev() {
+                        while vec.len() >= signature.len() {
+                            if vec.ends_with(sig) {
+                                if *off == 0 {
+                                    return Ok(start + vec.len());
+                                }
+                                for _ in 0..*off {
+                                    vec.pop();
+                                }
+                            }
+                            vec.pop();
+                        }
+                        start += std::mem::size_of::<Vec<u8>>();
+                    }
+                }
+            }
+        }
+        Err("Signature not found.")
+    }
+
+    fn find_module_address(&self, module: Option<MMapPath>) -> Result<(usize, usize), &str> {
+        match module {
+            Some(module_path) => {
+                for map in self.maps.iter() {
+                    if map.pathname == module_path {
+                        return Ok((map.address.0 as usize, map.address.1 as usize));
+                    }
+                }
+                return Err("Module not found.");
+            }
+            None => {
+                for map in self.maps.iter() {
+                    if map.perms == "r-xp" {
+                        return Ok((map.address.0 as usize, map.address.1 as usize));
+                    }
+                }
+                return Err("Execution module not found.");
+            }
+        };
     }
 }
