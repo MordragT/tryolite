@@ -5,12 +5,12 @@ fn main() {
     let process_manager = ProcessManager::new("ac_client").unwrap();
 
     let find = process_manager
-        .find::<&[u8]>(b"\x91\x02\x00", Some(MMapPath::Heap))
+        .find::<&[u8]>(b"\x00\x05\x00\x03\x00\x07", Some(MMapPath::Heap))
         .unwrap();
     println!("{:X}", find);
 
     let wild = process_manager
-        .find_with_wildcard::<Vec<u8>>("91 :: 00", Some(MMapPath::Heap))
+        .find_with_wildcard::<Vec<u8>>("00 05 00 :: 00 07", Some(MMapPath::Heap))
         .unwrap();
     println!("{:X}", wild);
 

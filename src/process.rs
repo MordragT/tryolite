@@ -98,37 +98,60 @@ impl ProcessManager {
                 Err(_) => offset += 1,
             }
         }
-        println!("{:?}", signatures);
-
         let (mut start, end) = self.find_module_address(module).unwrap();
 
         while start < end {
             match self.read::<T>(start) {
                 Err(_) => break,
                 Ok(mut vec) => {
-                    let mut offset = vec.len();
-                    for (sig, off) in signatures.iter().rev() {
-                        while vec.len() >= signature.len() {
-                            if vec.last().unwrap() == sig {
-                                if *off == 0 {
-                                    return Ok(start + offset + 1);
+                    fn get_address(
+                        vec: &mut Vec<u8>,
+                        signatures: &Vec<(u8, usize)>,
+                        start: usize,
+                    ) -> Result<usize, &'static str> {
+                        let mut offset: usize = 0;
+                        loop {
+                            let mut sig_iter = signatures.iter().rev();
+                            let mut vec_iter = vec.iter().rev();
+                            let first = *sig_iter.next().unwrap();
+                            let first_pos_rev = match vec_iter.position(|&x| x == first.0) {
+                                Some(x) => x + 1,
+                                None => return Err("Not found"),
+                            };
+
+                            for element in vec_iter.skip(first_pos_rev + first.1) {
+                                match sig_iter.next() {
+                                    None => return Ok(start + offset + first_pos_rev),
+                                    Some(x) if &x.0 != element => {
+                                        //println!("{:?}", first_pos_rev);
+                                        break;
+                                    }
+                                    Some(x) => offset += 1, //println!("{:?}", x),
                                 }
-                                for _ in 0..*off {
-                                    vec.pop();
-                                }
-                                break;
                             }
-                            vec.pop();
-                            offset -= 1;
+                            for _ in 0..first_pos_rev {
+                                offset += 1;
+                                vec.pop();
+                            }
+                            if vec.is_empty() {
+                                return Err("Not found");
+                            }
+                            //println!("{:?}", vec);
                         }
+                    };
+
+                    if let Ok(address) = get_address(&mut vec, &signatures, start) {
+                        return Ok(address);
                     }
                     start += std::mem::size_of::<Vec<u8>>();
+                    //println!("{}", start);
                 }
             }
         }
         Err("Signature not found.")
     }
 
+    /// Finds the start and end address of a module
     fn find_module_address(&self, module: Option<MMapPath>) -> Result<(usize, usize), &str> {
         match module {
             Some(module_path) => {
