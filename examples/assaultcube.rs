@@ -14,7 +14,6 @@ fn main() {
         .unwrap();
     println!("{:X}", find);
 
-    /*
     let response = process_manager.read::<u8>(0x5588369b6da8).unwrap();
     println!("{:?}", response);
 
@@ -28,5 +27,4 @@ fn main() {
             .write::<&[u8]>(0x5588369b6da8, &20u32.to_le_bytes())
             .unwrap();
     }
-    */
 }
