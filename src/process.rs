@@ -107,7 +107,7 @@ impl ProcessManager {
                         Some(x) => x + 1,
                         None => return Err("Not found"),
                     };
-                    let mut skip = 0;
+                    let mut skip = first.1;
                     let mut offset = 0;
                     for element in vec_iter.take(first_pos_rev + first.1) {
                         if skip > 0 {

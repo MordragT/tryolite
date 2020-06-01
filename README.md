@@ -17,7 +17,7 @@ fn main() {
     let process_manager = ProcessManager::new::<&[u8]>("ac_client").unwrap();
 
     let wild = process_manager
-        .find_with_wildcard::<&[u8]>("d0 99 63 5b ad 55", Some(MMapPath::Heap))
+        .find_with_wildcard::<&[u8]>("d0 99 :: 5b ad 55", Some(MMapPath::Heap))
         .unwrap();
     println!("{:X}", wild);
 
@@ -26,7 +26,7 @@ fn main() {
         .unwrap();
     println!("{:X}", find);
 
-    let response = process_manager.read::<u8>(0x5588369b6da8).unwrap();
+    let response = process_manager.read::<&[u8]>(0x5588369b6da8).unwrap();
     println!("{:?}", response);
 
     let write = process_manager
