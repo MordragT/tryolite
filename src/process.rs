@@ -53,6 +53,7 @@ impl ProcessManager {
     }
 
     /// Finds a signature and returns its address
+    // TODO rewrite with iterator instead of vec pop
     pub fn find<T: Into<Vec<u8>>>(
         &self,
         signature: T,
@@ -104,13 +105,9 @@ impl ProcessManager {
             match self.read::<T>(start) {
                 Err(_) => break,
                 Ok(mut vec) => {
-                    fn get_address(
-                        vec: &mut Vec<u8>,
-                        signatures: &Vec<(u8, usize)>,
-                        start: usize,
-                    ) -> Result<usize, &'static str> {
+                    let mut get_address = || {
                         let mut offset: usize = 0;
-                        loop {
+                        while !vec.is_empty() {
                             let mut sig_iter = signatures.iter().rev();
                             let mut vec_iter = vec.iter().rev();
                             let first = *sig_iter.next().unwrap();
@@ -119,28 +116,36 @@ impl ProcessManager {
                                 None => return Err("Not found"),
                             };
 
+                            let mut skip = 0;
                             for element in vec_iter.skip(first_pos_rev + first.1) {
+                                if skip > 0 {
+                                    skip -= 1;
+                                    continue;
+                                }
                                 match sig_iter.next() {
-                                    None => return Ok(start + offset + first_pos_rev),
+                                    None => {
+                                        //println!("{:?}", vec);
+                                        return Ok(start + vec.len() - 1);
+                                    }
                                     Some(x) if &x.0 != element => {
                                         //println!("{:?}", first_pos_rev);
                                         break;
                                     }
-                                    Some(x) => offset += 1, //println!("{:?}", x),
+                                    Some(x) => {
+                                        offset += 1;
+                                        skip = x.1;
+                                    }
                                 }
                             }
                             for _ in 0..first_pos_rev {
                                 offset += 1;
                                 vec.pop();
                             }
-                            if vec.is_empty() {
-                                return Err("Not found");
-                            }
-                            //println!("{:?}", vec);
                         }
+                        Err("Not found")
                     };
 
-                    if let Ok(address) = get_address(&mut vec, &signatures, start) {
+                    if let Ok(address) = get_address() {
                         return Ok(address);
                     }
                     start += std::mem::size_of::<Vec<u8>>();
