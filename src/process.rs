@@ -9,28 +9,34 @@ use procfs::process::Process;
 pub struct ProcessManager {
     process: Process,
     maps: Vec<MemoryMap>,
+    buffer_size: usize,
 }
 
 impl ProcessManager {
     /// Creates a new ProcessManager
-    pub fn new(name: &str) -> Result<ProcessManager, &str> {
+    pub fn new<T: Into<Vec<u8>>>(name: &str) -> Result<ProcessManager, &str> {
         for process in procfs::process::all_processes().unwrap() {
             if process.stat.comm == name {
                 println!("Process {} found.", name);
                 let maps = process.maps().unwrap();
-                return Ok(ProcessManager { process, maps });
+                let buffer_size = std::mem::size_of::<T>() * 4;
+                return Ok(ProcessManager {
+                    process,
+                    maps,
+                    buffer_size,
+                });
             }
         }
         Err("Process not found")
     }
 
     /// Reads memory starting at the given offset-address
-    pub fn read<T>(&self, address: usize) -> Result<Vec<u8>, &str> {
+    pub fn read<T: Into<Vec<u8>>>(&self, address: usize) -> Result<Vec<u8>, &str> {
         let remote = [RemoteIoVec {
             base: address,
-            len: std::mem::size_of::<T>(),
+            len: self.buffer_size,
         }];
-        let mut buffer = vec![0u8; std::mem::size_of::<T>()];
+        let mut buffer = vec![0u8; self.buffer_size];
         let local = [IoVec::from_mut_slice(&mut buffer)];
         match uio::process_vm_readv(Pid::from_raw(self.process.pid), &local, &remote) {
             Ok(x) if x > 0 => return Ok(buffer),
@@ -42,7 +48,7 @@ impl ProcessManager {
     pub fn write<T: Into<Vec<u8>>>(&self, address: usize, payload: T) -> Result<usize, &str> {
         let remote = [RemoteIoVec {
             base: address,
-            len: std::mem::size_of::<T>(),
+            len: self.buffer_size,
         }];
         let payload: Vec<u8> = payload.into();
         let local = [IoVec::from_slice(payload.as_slice())];
@@ -65,7 +71,7 @@ impl ProcessManager {
         while start < end {
             match self.read::<T>(start) {
                 Ok(mut vec) => {
-                    let mut offset = std::mem::size_of::<T>();
+                    let mut offset = self.buffer_size;
                     while vec.len() >= signature.len() {
                         if vec.ends_with(signature.as_slice()) {
                             return Ok(start + offset);
@@ -73,7 +79,7 @@ impl ProcessManager {
                         vec.pop();
                         offset -= 1;
                     }
-                    start += std::mem::size_of::<T>();
+                    start += self.buffer_size;
                 }
                 Err(_) => break,
             }
@@ -82,77 +88,62 @@ impl ProcessManager {
     }
     /// Supports wildcards with :: but only takes &str
     /// find_with_wildcard("00 :: a9 :: 00 :: 32")
-    pub fn find_with_wildcard<T>(
+    pub fn find_with_wildcard<T: Into<Vec<u8>>>(
         &self,
         signature: &str,
         module: Option<MMapPath>,
     ) -> Result<usize, &str> {
-        let mut signatures = Vec::new();
-        let mut offset = 0;
-        for sig in signature.split_whitespace() {
-            match usize::from_str_radix(sig, 16) {
-                Ok(val) => {
-                    let sig_hex = *val.to_be_bytes().to_vec().last().unwrap();
-                    signatures.push((sig_hex, offset));
-                    offset = 0;
-                }
-                Err(_) => offset += 1,
-            }
-        }
-        let (mut start, end) = self.find_module_address(module).unwrap();
+        let signatures = string_to_hex(signature).unwrap();
+        let (start, end) = self.find_module_address(module).unwrap();
 
-        while start < end {
-            match self.read::<T>(start) {
-                Err(_) => break,
-                Ok(mut vec) => {
-                    let mut get_address = || {
-                        let mut offset: usize = 0;
-                        while !vec.is_empty() {
-                            let mut sig_iter = signatures.iter().rev();
-                            let mut vec_iter = vec.iter().rev();
-                            let first = *sig_iter.next().unwrap();
-                            let first_pos_rev = match vec_iter.position(|&x| x == first.0) {
-                                Some(x) => x + 1,
-                                None => return Err("Not found"),
-                            };
-
-                            let mut skip = 0;
-                            for element in vec_iter.skip(first_pos_rev + first.1) {
-                                if skip > 0 {
-                                    skip -= 1;
-                                    continue;
-                                }
-                                match sig_iter.next() {
-                                    None => {
-                                        //println!("{:?}", vec);
-                                        return Ok(start + vec.len() - 1);
-                                    }
-                                    Some(x) if &x.0 != element => {
-                                        //println!("{:?}", first_pos_rev);
-                                        break;
-                                    }
-                                    Some(x) => {
-                                        offset += 1;
-                                        skip = x.1;
-                                    }
-                                }
+        for address in (start..end).step_by(self.buffer_size) {
+            let mut vec = self.read::<T>(address).unwrap();
+            let mut get_address = || {
+                while !vec.is_empty() {
+                    let mut sig_iter = signatures.iter().rev();
+                    let mut vec_iter = vec.iter().rev();
+                    let first = *sig_iter.next().unwrap();
+                    let first_pos_rev = match vec_iter.position(|&x| x == first.0) {
+                        Some(x) => x + 1,
+                        None => return Err("Not found"),
+                    };
+                    let mut skip = 0;
+                    let mut offset = 0;
+                    for element in vec_iter.take(first_pos_rev + first.1) {
+                        if skip > 0 {
+                            skip -= 1;
+                            continue;
+                        }
+                        match sig_iter.next() {
+                            None => {
+                                // Vector has not poped till the first object but the last first object
+                                // Therefor first_pos_rev is subtracted and the end should be returned
+                                return Ok(
+                                    address + vec.len() - offset - first_pos_rev + signatures.len()
+                                );
                             }
-                            for _ in 0..first_pos_rev {
+                            Some(x) if &x.0 != element => {
+                                break;
+                            }
+                            Some(x) => {
                                 offset += 1;
-                                vec.pop();
+                                skip = x.1;
                             }
                         }
-                        Err("Not found")
-                    };
-
-                    if let Ok(address) = get_address() {
-                        return Ok(address);
                     }
-                    start += std::mem::size_of::<Vec<u8>>();
-                    //println!("{}", start);
+                    for _ in 0..first_pos_rev {
+                        vec.pop();
+                        offset += 1;
+                    }
                 }
+                Err("Not found")
+            };
+
+            if let Ok(address) = get_address() {
+                return Ok(address);
             }
         }
+
         Err("Signature not found.")
     }
 
@@ -177,4 +168,23 @@ impl ProcessManager {
             }
         };
     }
+}
+
+pub fn string_to_hex(string: &str) -> Result<Vec<(u8, usize)>, &str> {
+    let mut result = Vec::new();
+    let mut offset = 0;
+    for sig in string.split_whitespace() {
+        if sig.len() != 2 {
+            return Err("Input is wrong formatted.");
+        }
+        match usize::from_str_radix(sig, 16) {
+            Ok(val) => {
+                let sig_hex = *val.to_be_bytes().to_vec().last().unwrap();
+                result.push((sig_hex, offset));
+                offset = 0;
+            }
+            Err(_) => offset += 1,
+        }
+    }
+    Ok(result)
 }
