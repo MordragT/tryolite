@@ -46,6 +46,7 @@ fn main() {
 
 - nix
 - procfs
+- alg_ds
 
 ## License
 
