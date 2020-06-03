@@ -42,7 +42,7 @@ impl MemoryMapManager {
         self.process.read_len(final_address, buffer_len)
     }
     /// Read a 32 bit value as a specified type on the given offset
-    pub fn read_32<T: EndianRead<Array = [u8; 32]>>(&self, offset: usize) -> Result<T, &str> {
+    pub fn read_32<T: EndianRead<Array = [u8; 4]>>(&self, offset: usize) -> Result<T, &str> {
         let final_address = offset + self.address.0;
         if final_address > self.address.1 {
             return Err("Address is out of range.");
@@ -132,10 +132,10 @@ impl ProcessManager {
         }
     }
 
-    pub fn read_32<T: EndianRead<Array = [u8; 32]>>(&self, address: usize) -> Result<T, &str> {
+    pub fn read_32<T: EndianRead<Array = [u8; 4]>>(&self, address: usize) -> Result<T, &str> {
         match self.read_len(address, std::mem::size_of::<T>()) {
             Ok(buffer) => {
-                let mut array = [0; 32];
+                let mut array = [0; 4];
                 array.copy_from_slice(buffer.as_slice());
                 return Ok(<T as EndianRead>::from_be_bytes(array));
             }
