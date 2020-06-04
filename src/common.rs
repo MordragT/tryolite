@@ -1,7 +1,7 @@
 /// Checks if a stack is sub of another and returns the first appearance
 pub fn is_sub<T: PartialEq>(mut haystack: &[T], needle: &[T]) -> Option<usize> {
     if needle.len() == 0 {
-        return None;
+        return Some(0);
     }
     let mut offset = 0;
     while !haystack.is_empty() {
@@ -30,3 +30,15 @@ macro_rules! impl_EndianRead (( $($int:ident),* ) => {
         }
     )*
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_is_sub() {
+        assert_eq!(is_sub(&mut vec![3, 4, 5, 2, 8, 2], &vec![5, 2, 8]), Some(2));
+        assert_eq!(is_sub(&mut vec![3, 7, 23, 7, 4, 3], &vec![3, 8]), None);
+        assert_eq!(is_sub(&mut vec![], &vec![3, 2, 6]), None);
+        assert_eq!(is_sub(&mut vec![2, 51, 3, 43, 7, 13, 4], &vec![]), Some(0));
+    }
+}

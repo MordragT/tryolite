@@ -132,6 +132,7 @@ impl ProcessManager {
         }
     }
 
+    /// Read memory at the specified address and returns the type of the generic parameter
     pub fn read_32<T: EndianRead<Array = [u8; 4]>>(&self, address: usize) -> Result<T, &str> {
         match self.read_len(address, std::mem::size_of::<T>()) {
             Ok(buffer) => {
@@ -182,7 +183,7 @@ impl ProcessManager {
         start_address: usize,
         end_address: usize,
     ) -> Result<usize, &str> {
-        let signatures = wildcard_string_to_hex(signature).unwrap();
+        let signatures = wildcard_str_to_hex(signature).unwrap();
 
         for address in (start_address..end_address).step_by(self.buffer_size) {
             let mut vec = self.read(address).unwrap();
@@ -264,7 +265,7 @@ impl ProcessManager {
     }
 }
 
-fn wildcard_string_to_hex(string: &str) -> Result<Vec<(u8, usize)>, &str> {
+fn wildcard_str_to_hex(string: &str) -> Result<Vec<(u8, usize)>, &str> {
     let mut result = Vec::new();
     let mut offset = 0;
     for sig in string.split_whitespace() {
@@ -277,8 +278,42 @@ fn wildcard_string_to_hex(string: &str) -> Result<Vec<(u8, usize)>, &str> {
                 result.push((sig_hex, offset));
                 offset = 0;
             }
-            Err(_) => offset += 1,
+            Err(_) => {
+                if sig != "::" {
+                    return Err(
+                        "Youre input contains non hexadecimal numbers apart from the wildcard :: .",
+                    );
+                }
+                offset += 1
+            }
         }
     }
+    if result.len() == 0 {
+        return Err("The signature needs atleast one hexadecimal number.");
+    }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_wildcard_str_to_hex() {
+        assert_eq!(
+            wildcard_str_to_hex("This is no hex string"),
+            Err("Input is wrong formatted.")
+        );
+        assert_eq!(
+            wildcard_str_to_hex(":: ::"),
+            Err("The signature needs atleast one hexadecimal number.")
+        );
+        assert_eq!(
+            wildcard_str_to_hex("   0f   :: 3f   ::      aa    "),
+            Ok(vec![(0x0f, 0), (0x3f, 1), (0xaa, 1)])
+        );
+        assert_eq!(
+            wildcard_str_to_hex("xx qq WW RR"),
+            Err("Youre input contains non hexadecimal numbers apart from the wildcard :: .",)
+        );
+    }
 }
