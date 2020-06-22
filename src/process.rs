@@ -1,14 +1,29 @@
-use crate::common;
-use crate::common::EndianRead;
-use crate::impl_EndianRead;
-use nix::sys::uio;
-use nix::sys::uio::IoVec;
-use nix::sys::uio::RemoteIoVec;
-use nix::unistd::Pid;
-pub use procfs::process::MMapPath;
-use procfs::process::MemoryMap;
-use procfs::process::Process;
+#[rustfmt::skip]
+use {
+    crate::common,
+    crate::common::EndianRead,
+    crate::impl_EndianRead,
+    sysinfo::{SystemExt, ProcessExt, System},
+};
 
+#[rustfmt::skip]
+#[cfg(target_os = "linux")]
+use {
+    nix::sys::uio,
+    nix::sys::uio::IoVec,
+    nix::sys::uio::RemoteIoVec,
+    nix::unistd::Pid,
+    procfs::process::Process as LinuxProcess,
+};
+
+#[cfg(target_os = "linux")]
+pub use procfs::process::MMapPath;
+
+#[rustfmt::skip]
+#[cfg(target_os = "windows")]
+use {
+    winapi::um::memoryapi,
+};
 // TODO module mamnager based on MMapPath, like process_manager.heap.find(b"\xA3");
 // TODO find similarities in memory
 // TODO calculate module offset of address
@@ -17,14 +32,16 @@ impl_EndianRead!(u8, u16, u32, u64);
 impl_EndianRead!(i8, i16, i32, i64);
 impl_EndianRead!(usize, isize);
 
-pub struct MemoryMapManager {
+#[cfg(target_os = "linux")]
+pub struct MemoryMapManager<'a> {
     pub address: (usize, usize),
     pub perms: String,
     pub pathname: MMapPath,
-    process: ProcessManager,
+    process: &'a ProcessManager,
 }
 
-impl MemoryMapManager {
+#[cfg(target_os = "linux")]
+impl<'a> MemoryMapManager<'a> {
     /// Read bytes in the memory region at the specified offset
     pub fn read(&self, offset: usize) -> Result<Vec<u8>, &str> {
         let final_address = offset + self.address.0;
@@ -83,42 +100,32 @@ impl MemoryMapManager {
         Ok(total)
     }
 }
+/// External Process Manager, uses kernel calls to change memory
 pub struct ProcessManager {
-    pub process: Process,
+    pub pid: i32,
     buffer_size: usize,
-}
-
-impl Clone for ProcessManager {
-    fn clone(&self) -> Self {
-        ProcessManager {
-            process: self.process.clone(),
-            buffer_size: self.buffer_size,
-        }
-    }
 }
 
 impl ProcessManager {
     /// Creates a new ProcessManager
     pub fn new<T: Into<Vec<u8>>>(name: &str) -> Result<ProcessManager, &str> {
-        for process in procfs::process::all_processes().unwrap() {
-            if process.stat.comm == name {
-                println!("Process {} found.", name);
-                let buffer_size = std::mem::size_of::<T>() * 4;
-                return Ok(ProcessManager {
-                    process,
-                    buffer_size,
-                });
-            }
+        let system = System::new_all();
+        let process_list = system.get_process_by_name(name);
+        if !process_list.is_empty() {
+            let pid = process_list[0].pid();
+            println!("Process {} found with id: {}", name, pid);
+            let buffer_size = std::mem::size_of::<T>() * 4;
+            return Ok(ProcessManager { pid, buffer_size });
         }
         Err("Process not found")
     }
-
     /// Reads memory starting at the given offset-address
     pub fn read(&self, address: usize) -> Result<Vec<u8>, &str> {
         self.read_len(address, self.buffer_size)
     }
 
     /// Reads memory with the specified buffer_len
+    #[cfg(target_os = "linux")]
     pub fn read_len(&self, address: usize, buffer_len: usize) -> Result<Vec<u8>, &str> {
         let remote = [RemoteIoVec {
             base: address,
@@ -126,11 +133,15 @@ impl ProcessManager {
         }];
         let mut buffer = vec![0u8; buffer_len];
         let local = [IoVec::from_mut_slice(&mut buffer)];
-        match uio::process_vm_readv(Pid::from_raw(self.process.pid), &local, &remote) {
+        match uio::process_vm_readv(Pid::from_raw(self.pid), &local, &remote) {
             Ok(x) if x > 0 => return Ok(buffer),
             _ => return Err("Process memory could not be read."),
         }
     }
+
+    /// Reads memory with the specified buffer_len
+    #[cfg(target_os = "windows")]
+    pub fn read_len(&self, address: usize, buffer_len: usize) -> Result<Vec<u8>, &str> {}
 
     /// Read memory at the specified address and returns the type of the generic parameter
     pub fn read_32<T: EndianRead<Array = [u8; 4]>>(&self, address: usize) -> Result<T, &str> {
@@ -145,17 +156,22 @@ impl ProcessManager {
     }
 
     /// Returns how many bytes were written
+    #[cfg(target_os = "linux")]
     pub fn write(&self, address: usize, payload: &[u8]) -> Result<usize, &str> {
         let remote = [RemoteIoVec {
             base: address,
             len: self.buffer_size,
         }];
         let local = [IoVec::from_slice(payload)];
-        match uio::process_vm_writev(Pid::from_raw(self.process.pid), &local, &remote) {
+        match uio::process_vm_writev(Pid::from_raw(self.pid), &local, &remote) {
             Ok(x) if x > 0 => return Ok(x),
             _ => return Err("Process memory could not be written."),
         }
     }
+
+    /// Returns how many bytes were written
+    #[cfg(target_os = "windows")]
+    pub fn write(&self, address: usize, payload: &[u8]) -> Result<usize, &str> {}
 
     /// Finds a signature
     /// Returns Address
@@ -187,48 +203,42 @@ impl ProcessManager {
 
         for address in (start_address..end_address).step_by(self.buffer_size) {
             let mut vec = self.read(address).unwrap();
-            let mut get_address = || {
-                while !vec.is_empty() {
-                    let mut sig_iter = signatures.iter().rev();
-                    let mut vec_iter = vec.iter().rev();
-                    let first = *sig_iter.next().unwrap();
-                    let first_pos_rev = match vec_iter.position(|&x| x == first.0) {
-                        Some(x) => x + 1,
-                        None => return Err("Not found"),
-                    };
-                    let mut skip = first.1;
-                    let mut offset = 0;
-                    for element in vec_iter.take(first_pos_rev + first.1) {
-                        if skip > 0 {
-                            skip -= 1;
-                            continue;
-                        }
-                        match sig_iter.next() {
-                            None => {
-                                // Vector has not poped till the first object but the last first object
-                                // Therefor first_pos_rev is subtracted and the end should be returned
-                                return Ok(
-                                    address + vec.len() - offset - first_pos_rev + signatures.len()
-                                );
-                            }
-                            Some(x) if &x.0 != element => {
-                                break;
-                            }
-                            Some(x) => {
-                                offset += 1;
-                                skip = x.1;
-                            }
-                        }
+            while !vec.is_empty() {
+                let mut sig_iter = signatures.iter().rev();
+                let mut vec_iter = vec.iter().rev();
+                let first = *sig_iter.next().unwrap();
+                let first_pos_rev = match vec_iter.position(|&x| x == first.0) {
+                    Some(x) => x + 1,
+                    None => break,
+                };
+                let mut skip = first.1;
+                let mut offset = 0;
+                for element in vec_iter.take(first_pos_rev + first.1) {
+                    if skip > 0 {
+                        skip -= 1;
+                        continue;
                     }
-                    for _ in 0..first_pos_rev {
-                        vec.pop();
-                        offset += 1;
+                    match sig_iter.next() {
+                        None => {
+                            // Vector has not poped till the first object but the last first object
+                            // Therefor first_pos_rev is subtracted and the end should be returned
+                            return Ok(
+                                address + vec.len() - offset - first_pos_rev + signatures.len()
+                            );
+                        }
+                        Some(x) if &x.0 != element => {
+                            break;
+                        }
+                        Some(x) => {
+                            offset += 1;
+                            skip = x.1;
+                        }
                     }
                 }
-                Err("Not found")
-            };
-            if let Ok(address) = get_address() {
-                return Ok(address);
+                for _ in 0..first_pos_rev {
+                    vec.pop();
+                    offset += 1;
+                }
             }
         }
 
@@ -236,17 +246,19 @@ impl ProcessManager {
     }
 
     /// Listens on address for changes and creates signature after certain amount of changes
-    pub fn create_signatures(address: usize, changes: u8) -> Result<usize, &'static str> {
-        Ok(0)
-    }
+    // pub fn create_signatures(address: usize, changes: u8) -> Result<usize, &'static str> {
+    //     Ok(0)
+    // }
 
     /// Gets the memory region
+    #[cfg(target_os = "linux")]
     pub fn new_memory_map_manager(
         &self,
         region: MMapPath,
         permissions: Option<&str>,
     ) -> Result<MemoryMapManager, &str> {
-        match self.process.maps().unwrap().iter().find(|&x| {
+        let linux_process = LinuxProcess::new(self.pid).unwrap();
+        match linux_process.maps().unwrap().iter().find(|&x| {
             if let Some(perms) = permissions {
                 return x.pathname == region && x.perms == perms;
             }
@@ -257,7 +269,7 @@ impl ProcessManager {
                     address: (memory_map.address.0 as usize, memory_map.address.1 as usize),
                     perms: memory_map.perms.clone(),
                     pathname: memory_map.pathname.clone(),
-                    process: self.clone(),
+                    process: self,
                 })
             }
             None => return Err("Memory region not found."),
