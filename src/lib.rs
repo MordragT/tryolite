@@ -10,3 +10,7 @@ pub mod process;
 // pub mod process_windows;
 // #[cfg(windows)]
 // pub use process_windows as process;
+
+// TODO create injector that searches for not allocated memory at the end of a module
+// if the free memory is enough for the given shared library
+// allocate memory there and create thread on the allocated memory
