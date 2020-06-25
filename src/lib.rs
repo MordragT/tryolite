@@ -1,3 +1,4 @@
+#![feature(proc_macro_hygiene)]
 pub mod common;
 pub mod process;
 
@@ -14,3 +15,4 @@ pub mod process;
 // TODO create injector that searches for not allocated memory at the end of a module
 // if the free memory is enough for the given shared library
 // allocate memory there and create thread on the allocated memory
+// between the new allocated memory and the first "real" mem there must be a buffer

@@ -5,7 +5,6 @@ use {
     crate::common::EndianRead,
     procfs::process::Process as LinuxProcess,
 };
-#[cfg(target_os = "linux")]
 pub struct MemoryModuleManager<'a> {
     pub address: (usize, usize),
     pub perms: String,
@@ -13,7 +12,6 @@ pub struct MemoryModuleManager<'a> {
     process: &'a ProcessManager,
 }
 
-#[cfg(target_os = "linux")]
 impl<'a> MemoryModuleManager<'a> {
     /// Creates new MemoryModuleManager
     pub fn new(

@@ -1,9 +1,11 @@
+use std::path::Path;
 use std::path::PathBuf;
 use tryolib::process::MMapPath;
 use tryolib::process::ProcessManager;
 
 fn main() {
     let process_manager = ProcessManager::new::<&[u8]>("ac_client").unwrap();
+    process_manager.inject("asdasd");
 
     let path = PathBuf::from(r"/usr/bin/ac_client");
     let memory_map = process_manager
