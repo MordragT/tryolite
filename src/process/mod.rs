@@ -17,6 +17,10 @@ use {
     nix::sys::uio::IoVec,
     nix::sys::uio::RemoteIoVec,
     nix::unistd::Pid,
+    nix::sys::mman,
+    nix::fcntl::OFlag,
+    nix::sys::stat::Mode,
+    nix::unistd,
     procfs::process::Process as LinuxProcess,
     regex::Regex,
     goblin::Object,
@@ -215,10 +219,11 @@ impl ProcessManager {
         MemoryModuleManager::new(region, permissions, self)
     }
 
+    /// Find memory module with given regex
     #[cfg(target_os = "linux")]
-    pub fn find_ld(&self) -> Result<(PathBuf, usize), &str> {
+    pub fn find_regex(&self, regex: &str) -> Result<(PathBuf, usize), &str> {
         let linux_process = LinuxProcess::new(self.pid).unwrap();
-        let re = Regex::new(r".*/ld-.*\.so").unwrap();
+        let re = Regex::new(regex).unwrap();
         let mut path = None;
         match linux_process.maps().unwrap().iter().find(|&x| {
             if let MMapPath::Path(path_buf) = &x.pathname {
@@ -240,9 +245,12 @@ impl ProcessManager {
         const STACK_BACKUP_SIZE: usize = 8 * 16;
         const STAGE_TWO_SIZE: u32 = 0x8000;
 
-        let ld = self.find_ld().unwrap();
+        let ld = self.find_regex(r".*/ld-.*\.so").unwrap();
+        let librt = self.find_regex(r".*/librt-.*\.so").unwrap();
+
         let dl_open_address = ld.1 + find_elf_symbol(&ld.0, "_dl_open").unwrap();
-        let malloc_address = ld.1 + find_elf_symbol(&ld.0, "malloc").unwrap();
+        let shm_open_address = librt.1 + find_elf_symbol(&librt.0, "shm_open").unwrap();
+        let shm_unlink_address = librt.1 + find_elf_symbol(&librt.0, "shm_unlink").unwrap();
 
         signal::kill(Pid::from_raw(self.pid), Signal::SIGSTOP).unwrap();
 
@@ -260,190 +268,8 @@ impl ProcessManager {
         let current_rsp =
             usize::from_str_radix(syscall_buffer[1].trim_start_matches("0x"), 16).unwrap();
 
-        //let mut ops = Assembler::new().unwrap();
-        // let mut ops = Assembler::new().unwrap();
-        // let shell_code = ops.offset();
-
-        // dynasm!(ops
-        //     ; pushf
-        //     ; push rax
-        //     ; push rbx
-        //     ; push rcx
-        //     ; push rdx
-        //     ; push rbp
-        //     ; push rsi
-        //     ; push rdi
-        //     ; push r8
-        //     ; push r9
-        //     ; push r10
-        //     ; push r11
-        //     ; push r12
-        //     ; push r13
-        //     ; push r14
-        //     ; push r15
-
-        //     // Open stage 2 file
-        //     ; mov rax, 2
-        //     ; lea rdi, [>path]
-        //     ; xor rsi, rsi
-        //     ; xor rdx, rdx
-        //     ; syscall
-        //     ; mov r14, rax
-
-        //     // mmap it
-        //     ; mov rax, 9
-        //     ; xor rdi, rdi
-        //     ; mov rsi, STAGE_TWO_SIZE as _
-        //     ; mov rdx, 0x7
-        //     ; mov r10, 0x2
-        //     ; mov r8, r14
-        //     ; xor r9, r9
-        //     ; syscall
-        //     ; mov r15, rax
-
-        //     // close the file
-        //     ; mov rax, 3
-        //     ; mov rdi, r14
-        //     ; syscall
-
-        //     // delete the file
-        //     ; mov rax, 87
-        //     ; lea rdi, [>path]
-        //     ; syscall
-
-        //     ; jmp r15
-        //     ; path:
-        //     ; .bytes "/tmp/stage_two.bin".as_bytes()
-        // );
-
-        // let shell_code_exe = ops.finalize().unwrap();
-        // let shell_code_buf = unsafe {
-        //     std::slice::from_raw_parts(shell_code_exe.ptr(shell_code), shell_code_exe.size())
-        // };
-
-        // for c in shell_code_buf {
-        //     print!("{:x} ", c);
-        // }
-
-        // let mut shell_code_bin = compile(shell_code.as_str(), None).unwrap();
-        // let mut shell_code_buf = Vec::new();
-        // shell_code_bin.read_to_end(&mut shell_code_buf).unwrap();
-
-        // let mut mem_file = File::open(format!("/proc/{}/mem", self.pid)).unwrap();
-        // mem_file.seek(SeekFrom::Start(current_rip as u64)).unwrap();
-        // let mut code_backup = vec![0; shell_code_buf.len()];
-        // mem_file.read_exact(code_backup.as_mut_slice()).unwrap();
-
-        // mem_file
-        //     .seek(SeekFrom::Start(
-        //         current_rsp as u64 - STACK_BACKUP_SIZE as u64,
-        //     ))
-        //     .unwrap();
-        // let mut stack_backup = vec![0; STACK_BACKUP_SIZE];
-        // mem_file.read_exact(stack_backup.as_mut_slice()).unwrap();
-
-        // let mut ops = Assembler::new().unwrap();
-        // let injection = ops.offset();
-
-        // dynasm!(ops
-        //     ; cld
-        //     ; fxsave [>moar_regs]
-
-        //     // Open /proc/self/mem
-        //     ; mov rax, 2
-        //     ; lea rdi, [>proc_self_mem]
-        //     ; mov rsi, 2
-        //     ; xor rdx, rdx
-        //     ; syscall
-        //     ; mov r15, rax
-
-        //     // seek to code
-        //     ; mov rax, 8
-        //     ; mov rdi, r15
-        //     ; mov rsi, current_rip as _
-        //     ; xor rdx, rdx
-        //     ; syscall
-
-        //     // restore code
-        //     ; mov rax, 1
-        //     ; mov rdi, r15
-        //     ; lea rsi, [>old_code]
-        //     ; mov rdx, code_backup.len() as _
-        //     ; syscall
-
-        //     // close /proc/self/mem
-        //     ; mov rax, 3
-        //     ; mov rdi, r15
-        //     ; syscall
-
-        //     // move pushed regs to our new stack
-        //     ; lea rdi, [>new_stack_base - (STACK_BACKUP_SIZE as isize)]
-        //     ; mov rsi, (current_rsp - STACK_BACKUP_SIZE) as _
-        //     ; mov rcx, STACK_BACKUP_SIZE as _
-        //     ; rep movsb
-
-        //     // restore original stack
-        //     ; mov rdi, (current_rsp - STACK_BACKUP_SIZE) as _
-        //     ; lea rsi, [>old_stack]
-        //     ; mov rcx, STACK_BACKUP_SIZE as _
-        //     ; rep movsb
-
-        //     ; lea rsp, [>new_stack_base - (STACK_BACKUP_SIZE as isize)]
-
-        //     // call _dl_open
-        //     ; lea rdi, [>lib_path]
-        //     ; mov rsi, 2
-        //     ; xor rcx, rcx
-        //     ; mov rax, dl_open_address as _
-        //     ; call rax
-
-        //     ; fxrstor [>moar_regs]
-        //     ; pop r15
-        //     ; pop r14
-        //     ; pop r13
-        //     ; pop r12
-        //     ; pop r11
-        //     ; pop r10
-        //     ; pop r9
-        //     ; pop r8
-        //     ; pop rdi
-        //     ; pop rsi
-        //     ; pop rbp
-        //     ; pop rdx
-        //     ; pop rcx
-        //     ; pop rdx
-        //     ; pop rax
-        //     ; popf
-        //     ; mov rsp, rsp
-        //     ; jmp >old_rip
-
-        //     ; old_rip:
-        //     ; .qword current_rip as _
-
-        //     ; old_code:
-        //     ; .bytes code_backup.as_slice()
-
-        //     ; old_stack:
-        //     ; .bytes stack_backup.as_slice()
-        //     ; .align 16
-
-        //     ; moar_regs:
-        //     //; .space 512
-
-        //     ; lib_path:
-        //     ; .bytes shared_library.as_ref().to_str().unwrap().as_bytes()
-
-        //     ; proc_self_mem:
-        //     ; .bytes "/proc/self/mem".as_bytes()
-
-        //     ; new_stack:
-        //     ; .align 0x8000
-
-        //     ; new_stack_base:
-        // );
-
         let mut ops = Assembler::new().unwrap();
-        let injection = ops.offset();
+        let shell_code = ops.offset();
 
         dynasm!(ops
             ; pushf
@@ -463,6 +289,104 @@ impl ProcessManager {
             ; push r14
             ; push r15
 
+            // Open shared memory object: stage two
+            ; mov rdi, [>shared_object]
+            ; mov rsi, 1
+            ; mov rax, shm_open_address as _
+            ; call rax
+            ; mov r14, rax
+
+            // mmap it
+            ; mov rax, 9
+            ; xor rdi, rdi
+            ; mov rsi, STAGE_TWO_SIZE as _
+            ; mov rdx, 0x7
+            ; mov r10, 0x2
+            ; mov r8, r14
+            ; xor r9, r9
+            ; syscall
+            ; mov r15, rax
+
+            // close the file
+            ; mov rax, 3
+            ; mov rdi, r14
+            ; syscall
+
+            // Unlink shared memory object
+            ; mov rdi, [>shared_object]
+            ; mov rax, shm_unlink_address as _
+            ; call rax
+
+            ; shared_object:
+            ; .bytes "/stage_two".as_bytes()
+        );
+
+        let shell_code_exe = ops.finalize().unwrap();
+        let shell_code_buf = unsafe {
+            std::slice::from_raw_parts(shell_code_exe.ptr(shell_code), shell_code_exe.size())
+        };
+
+        let mut mem_file = File::open(format!("/proc/{}/mem", self.pid)).unwrap();
+        mem_file.seek(SeekFrom::Start(current_rip as u64)).unwrap();
+        let mut code_backup = vec![0; shell_code_buf.len()];
+        mem_file.read_exact(code_backup.as_mut_slice()).unwrap();
+
+        mem_file
+            .seek(SeekFrom::Start(
+                current_rsp as u64 - STACK_BACKUP_SIZE as u64,
+            ))
+            .unwrap();
+        let mut stack_backup = vec![0; STACK_BACKUP_SIZE];
+        mem_file.read_exact(stack_backup.as_mut_slice()).unwrap();
+
+        let mut ops = Assembler::new().unwrap();
+        let injection = ops.offset();
+
+        dynasm!(ops
+            ; cld
+            ; fxsave [>moar_regs]
+
+            // Open /proc/self/mem
+            ; mov rax, 2
+            ; lea rdi, [>proc_self_mem]
+            ; mov rsi, 2
+            ; xor rdx, rdx
+            ; syscall
+            ; mov r15, rax
+
+            // seek to code
+            ; mov rax, 8
+            ; mov rdi, r15
+            ; mov rsi, current_rip as _
+            ; xor rdx, rdx
+            ; syscall
+
+            // restore code
+            ; mov rax, 1
+            ; mov rdi, r15
+            ; lea rsi, [>old_code]
+            ; mov rdx, code_backup.len() as _
+            ; syscall
+
+            // close /proc/self/mem
+            ; mov rax, 3
+            ; mov rdi, r15
+            ; syscall
+
+            // move pushed regs to our new stack
+            ; lea rdi, [>new_stack_base - (STACK_BACKUP_SIZE as isize)]
+            ; mov rsi, (current_rsp - STACK_BACKUP_SIZE) as _
+            ; mov rcx, STACK_BACKUP_SIZE as _
+            ; rep movsb
+
+            // restore original stack
+            ; mov rdi, (current_rsp - STACK_BACKUP_SIZE) as _
+            ; lea rsi, [>old_stack]
+            ; mov rcx, STACK_BACKUP_SIZE as _
+            ; rep movsb
+
+            ; lea rsp, [>new_stack_base - (STACK_BACKUP_SIZE as isize)]
+
             // call _dl_open
             ; lea rdi, [>lib_path]
             ; mov rsi, 2
@@ -470,6 +394,7 @@ impl ProcessManager {
             ; mov rax, dl_open_address as _
             ; call rax
 
+            ; fxrstor [>moar_regs]
             ; pop r15
             ; pop r14
             ; pop r13
@@ -486,9 +411,32 @@ impl ProcessManager {
             ; pop rdx
             ; pop rax
             ; popf
+            ; mov rsp, rsp
+            ; jmp >old_rip
+
+            ; old_rip:
+            ; .qword current_rip as _
+
+            ; old_code:
+            ; .bytes code_backup.as_slice()
+
+            ; old_stack:
+            ; .bytes stack_backup.as_slice()
+            ; .align 16
+
+            ; moar_regs:
+            //; .space 512
 
             ; lib_path:
             ; .bytes shared_library.as_ref().to_str().unwrap().as_bytes()
+
+            ; proc_self_mem:
+            ; .bytes "/proc/self/mem".as_bytes()
+
+            ; new_stack:
+            ; .align 0x8000
+
+            ; new_stack_base:
         );
 
         let injection_exe = ops.finalize().unwrap();
@@ -496,22 +444,10 @@ impl ProcessManager {
             std::slice::from_raw_parts(injection_exe.ptr(injection), injection_exe.size())
         };
 
-        // let mut mem_file = File::open(format!("/proc/{}/mem", self.pid)).unwrap();
-        // mem_file.seek(SeekFrom::Start(current_rip as u64)).unwrap();
-        // mem_file.write_all(injection_buf).unwrap();
-        println!("RIP: {:x}", current_rip);
-        self.write(current_rip, injection_buf).unwrap();
+        let shared_object_fd = mman::shm_open("/stage_two", OFlag::O_CREAT, Mode::S_IWUSR).unwrap();
+        unistd::write(shared_object_fd, injection_buf).unwrap();
 
-        // let stage_two_exe = ops.finalize().unwrap();
-        // let stage_two_buf = unsafe {
-        //     std::slice::from_raw_parts(stage_two_exe.ptr(stage_two), stage_two_exe.size())
-        // };
-        //println!("{:?}", stage_two_buf);
-
-        // let mut stage_two_bin = compile(stage_two.as_str(), Some("stage_two")).unwrap();
-        // let mut stage_two_buf = Vec::new();
-        // stage_two_bin.read_to_end(&mut stage_two_buf).unwrap();
-
+        self.write(current_rip, shell_code_buf).unwrap();
         signal::kill(Pid::from_raw(self.pid), Signal::SIGCONT).unwrap();
     }
 }
@@ -527,6 +463,13 @@ pub fn find_elf_symbol<P: AsRef<Path>>(elf_path: P, sym_name: &str) -> Result<us
     if let Some(elf) = elf_option {
         for sym in elf.syms.iter() {
             if let Some(Ok(name)) = elf.strtab.get(sym.st_name) {
+                if name == sym_name {
+                    return Ok(sym.st_value as usize);
+                }
+            }
+        }
+        for sym in elf.dynsyms.iter() {
+            if let Some(Ok(name)) = elf.dynstrtab.get(sym.st_name) {
                 if name == sym_name {
                     return Ok(sym.st_value as usize);
                 }
