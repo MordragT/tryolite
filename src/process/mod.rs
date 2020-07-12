@@ -13,11 +13,13 @@ use {
 #[rustfmt::skip]
 #[cfg(target_os = "linux")]
 use {
+    std::fs::OpenOptions,
+    std::ptr,
     nix::sys::uio,
     nix::sys::uio::IoVec,
     nix::sys::uio::RemoteIoVec,
     nix::unistd::Pid,
-    nix::sys::mman,
+    nix::sys::mman::{self, ProtFlags, MapFlags},
     nix::fcntl::OFlag,
     nix::sys::stat::Mode,
     nix::unistd,
@@ -28,7 +30,7 @@ use {
     nix::sys::signal::{self, Signal, SigevNotify, SigEvent},
     std::io::SeekFrom,
     dynasmrt::{DynasmApi, DynasmLabelApi, VecAssembler},
-    dynasmrt::x64::Assembler,
+    dynasmrt::x64::X64Relocation,
     dynasm::dynasm,
 };
 
@@ -111,6 +113,7 @@ impl ProcessManager {
     }
 
     /// Returns how many bytes were written
+    /// Writes with a syscall, do not use it for cheats
     #[cfg(target_os = "linux")]
     pub fn write(&self, address: usize, payload: &[u8]) -> Result<usize, &str> {
         let remote = [RemoteIoVec {
@@ -126,6 +129,18 @@ impl ProcessManager {
             }
             _ => return Err("Process memory could not be written."),
         }
+    }
+
+    /// Writes into the mem file of the proc filesystem
+    #[cfg(target_os = "linux")]
+    pub fn write_anon(&self, address: usize, payload: &[u8]) -> std::io::Result<()> {
+        let mut mem_file = OpenOptions::new()
+            .write(true)
+            .open(format!("/proc/{}/mem", self.pid))
+            .unwrap();
+        mem_file.seek(SeekFrom::Start(address as u64))?;
+        mem_file.write_all(payload)?;
+        Ok(())
     }
 
     /// Returns how many bytes were written
@@ -268,8 +283,8 @@ impl ProcessManager {
         let current_rsp =
             usize::from_str_radix(syscall_buffer[1].trim_start_matches("0x"), 16).unwrap();
 
-        let mut ops = Assembler::new().unwrap();
-        let shell_code = ops.offset();
+        println!("Instruction Pointer: {:x}", current_rip);
+        let mut ops: VecAssembler<X64Relocation> = VecAssembler::new(0x00);
 
         dynasm!(ops
             ; pushf
@@ -321,10 +336,7 @@ impl ProcessManager {
             ; .bytes "/stage_two".as_bytes()
         );
 
-        let shell_code_exe = ops.finalize().unwrap();
-        let shell_code_buf = unsafe {
-            std::slice::from_raw_parts(shell_code_exe.ptr(shell_code), shell_code_exe.size())
-        };
+        let shell_code_buf = ops.finalize().unwrap();
 
         let mut mem_file = File::open(format!("/proc/{}/mem", self.pid)).unwrap();
         mem_file.seek(SeekFrom::Start(current_rip as u64)).unwrap();
@@ -339,8 +351,7 @@ impl ProcessManager {
         let mut stack_backup = vec![0; STACK_BACKUP_SIZE];
         mem_file.read_exact(stack_backup.as_mut_slice()).unwrap();
 
-        let mut ops = Assembler::new().unwrap();
-        let injection = ops.offset();
+        let mut ops: VecAssembler<X64Relocation> = VecAssembler::new(0x00);
 
         dynasm!(ops
             ; cld
@@ -439,16 +450,37 @@ impl ProcessManager {
             ; new_stack_base:
         );
 
-        let injection_exe = ops.finalize().unwrap();
-        let injection_buf = unsafe {
-            std::slice::from_raw_parts(injection_exe.ptr(injection), injection_exe.size())
+        let injection_buf = ops.finalize().unwrap();
+
+        let shared_fd =
+            mman::shm_open("/stage_two", OFlag::O_CREAT | OFlag::O_RDWR, Mode::S_IWUSR).unwrap();
+        unistd::ftruncate(shared_fd, injection_buf.len() as i64).unwrap();
+        let shared_data = unsafe {
+            mman::mmap(
+                0 as *mut std::ffi::c_void,
+                injection_buf.len(),
+                ProtFlags::PROT_WRITE,
+                MapFlags::MAP_SHARED,
+                shared_fd,
+                0,
+            )
+            .unwrap()
         };
+        unsafe {
+            ptr::copy_nonoverlapping(
+                injection_buf.as_ptr(),
+                shared_data as *mut u8,
+                injection_buf.len(),
+            );
+            mman::munmap(shared_data, injection_buf.len()).unwrap();
+            unistd::close(shared_fd).unwrap();
+        }
 
-        let shared_object_fd = mman::shm_open("/stage_two", OFlag::O_CREAT, Mode::S_IWUSR).unwrap();
-        unistd::write(shared_object_fd, injection_buf).unwrap();
-
-        self.write(current_rip, shell_code_buf).unwrap();
+        self.write_anon(current_rip, shell_code_buf.as_slice())
+            .unwrap();
         signal::kill(Pid::from_raw(self.pid), Signal::SIGCONT).unwrap();
+
+        println!("Injection was succesfull");
     }
 }
 
