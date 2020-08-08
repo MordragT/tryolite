@@ -307,14 +307,14 @@ impl ProcessManager {
             // Open shared memory object: stage two
             ; mov rdi, [>shared_object]
             ; mov rsi, 1
-            ; mov rax, shm_open_address as _
+            ; mov rax, QWORD shm_open_address as i64
             ; call rax
             ; mov r14, rax
 
             // mmap it
             ; mov rax, 9
             ; xor rdi, rdi
-            ; mov rsi, STAGE_TWO_SIZE as _
+            ; mov rsi, DWORD STAGE_TWO_SIZE as i32
             ; mov rdx, 0x7
             ; mov r10, 0x2
             ; mov r8, r14
@@ -329,7 +329,7 @@ impl ProcessManager {
 
             // Unlink shared memory object
             ; mov rdi, [>shared_object]
-            ; mov rax, shm_unlink_address as _
+            ; mov rax, QWORD shm_unlink_address as i64
             ; call rax
 
             ; shared_object:
@@ -368,7 +368,7 @@ impl ProcessManager {
             // seek to code
             ; mov rax, 8
             ; mov rdi, r15
-            ; mov rsi, current_rip as _
+            ; mov rsi, QWORD current_rip as i64
             ; xor rdx, rdx
             ; syscall
 
@@ -386,14 +386,14 @@ impl ProcessManager {
 
             // move pushed regs to our new stack
             ; lea rdi, [>new_stack_base - (STACK_BACKUP_SIZE as isize)]
-            ; mov rsi, (current_rsp - STACK_BACKUP_SIZE) as _
-            ; mov rcx, STACK_BACKUP_SIZE as _
+            ; mov rsi, QWORD (current_rsp - STACK_BACKUP_SIZE) as i64
+            ; mov rcx, DWORD STACK_BACKUP_SIZE as i32
             ; rep movsb
 
             // restore original stack
-            ; mov rdi, (current_rsp - STACK_BACKUP_SIZE) as _
+            ; mov rdi, QWORD (current_rsp - STACK_BACKUP_SIZE) as i64
             ; lea rsi, [>old_stack]
-            ; mov rcx, STACK_BACKUP_SIZE as _
+            ; mov rcx, DWORD STACK_BACKUP_SIZE as i32
             ; rep movsb
 
             ; lea rsp, [>new_stack_base - (STACK_BACKUP_SIZE as isize)]
@@ -402,7 +402,7 @@ impl ProcessManager {
             ; lea rdi, [>lib_path]
             ; mov rsi, 2
             ; xor rcx, rcx
-            ; mov rax, dl_open_address as _
+            ; mov rax, QWORD dl_open_address as i64
             ; call rax
 
             ; fxrstor [>moar_regs]
@@ -422,11 +422,11 @@ impl ProcessManager {
             ; pop rdx
             ; pop rax
             ; popf
-            ; mov rsp, rsp
-            ; jmp >old_rip
+            ; mov rsp, QWORD current_rsp as i64
+            ; jmp QWORD [>old_rip]
 
             ; old_rip:
-            ; .qword current_rip as _
+            ; .qword current_rip as i64
 
             ; old_code:
             ; .bytes code_backup.as_slice()
