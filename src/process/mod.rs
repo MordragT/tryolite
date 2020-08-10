@@ -18,11 +18,10 @@ use {
     nix::sys::uio,
     nix::sys::uio::IoVec,
     nix::sys::uio::RemoteIoVec,
-    nix::unistd::Pid,
+    nix::unistd::{self, Pid, Uid, Gid},
     nix::sys::mman::{self, ProtFlags, MapFlags},
     nix::fcntl::OFlag,
     nix::sys::stat::Mode,
-    nix::unistd,
     procfs::process::Process as LinuxProcess,
     regex::Regex,
     goblin::Object,
@@ -250,7 +249,7 @@ impl ProcessManager {
             return false;
         }) {
             Some(mem_map) => return Ok((path.unwrap(), mem_map.address.0 as usize)),
-            None => return Err("Ld could not be found."),
+            None => return Err("Regex could not be found."),
         }
     }
 
@@ -269,7 +268,7 @@ impl ProcessManager {
 
         signal::kill(Pid::from_raw(self.pid), Signal::SIGSTOP).unwrap();
 
-        // check if process really stopped ?
+        // TODO check if process really stopped ?
         std::thread::sleep_ms(500);
 
         let mut syscall_file = File::open(format!("/proc/{}/syscall", self.pid)).unwrap();
@@ -285,6 +284,11 @@ impl ProcessManager {
 
         println!("Instruction Pointer: {:x}", current_rip);
         let mut ops: VecAssembler<X64Relocation> = VecAssembler::new(0x00);
+
+        // O_RDONLY 0
+        // O_WRONLY 1
+        // O_RDWR 2
+        // O_CREAT 4
 
         dynasm!(ops
             ; pushf
@@ -304,11 +308,20 @@ impl ProcessManager {
             ; push r14
             ; push r15
 
-            // Open shared memory object: stage two
-            ; mov rdi, [>shared_object]
-            ; mov rsi, 1
-            ; mov rax, QWORD shm_open_address as i64
-            ; call rax
+            // // Open shared memory object: stage two
+            // ; mov rdi, [>shared_object]
+            // ; mov rsi, 0
+            // ; mov rdx, 0
+            // ; mov rax, QWORD shm_open_address as i64
+            // ; call rax
+            // ; mov r14, rax
+
+            // Open shared memory as normal file: stage two
+            ; mov rax, 2
+            ; lea rdi, [>shared_object]
+            ; xor rsi, rsi // O_RDONLY
+            ; xor rdx, rdx
+            ; syscall
             ; mov r14, rax
 
             // mmap it
@@ -327,20 +340,28 @@ impl ProcessManager {
             ; mov rdi, r14
             ; syscall
 
+            // delete the file (not exactly necessary)
+            ; mov rax, 87
+            ; lea rdi, [>shared_object]
+            ; syscall
+
             // Unlink shared memory object
-            ; mov rdi, [>shared_object]
-            ; mov rax, QWORD shm_unlink_address as i64
-            ; call rax
+            // ; mov rdi, [>shared_object]
+            // ; mov rax, QWORD shm_unlink_address as i64
+            // ; call rax
+
+            // Jump to Stage 2
+            ; jmp r15
 
             ; shared_object:
-            ; .bytes "/stage_two".as_bytes()
+            ; .bytes "/dev/shm/stage_two".as_bytes()
         );
 
         let shell_code_buf = ops.finalize().unwrap();
 
         let mut mem_file = File::open(format!("/proc/{}/mem", self.pid)).unwrap();
         mem_file.seek(SeekFrom::Start(current_rip as u64)).unwrap();
-        let mut code_backup = vec![0; shell_code_buf.len()];
+        let mut code_backup = vec![0_u8; shell_code_buf.len()];
         mem_file.read_exact(code_backup.as_mut_slice()).unwrap();
 
         mem_file
@@ -429,14 +450,14 @@ impl ProcessManager {
             ; .qword current_rip as i64
 
             ; old_code:
-            ; .bytes code_backup.as_slice()
+            ; .bytes code_backup
 
             ; old_stack:
-            ; .bytes stack_backup.as_slice()
+            ; .bytes stack_backup
             ; .align 16
 
             ; moar_regs:
-            //; .space 512
+            ; .bytes vec![0_u8; 512]
 
             ; lib_path:
             ; .bytes shared_library.as_ref().to_str().unwrap().as_bytes()
@@ -452,14 +473,18 @@ impl ProcessManager {
 
         let injection_buf = ops.finalize().unwrap();
 
-        let shared_fd =
-            mman::shm_open("/stage_two", OFlag::O_CREAT | OFlag::O_RDWR, Mode::S_IWUSR).unwrap();
+        let shared_fd = mman::shm_open(
+            "/stage_two",
+            OFlag::O_CREAT | OFlag::O_RDWR,
+            Mode::S_IRWXU | Mode::S_IRWXG | Mode::S_IRWXO,
+        )
+        .unwrap();
         unistd::ftruncate(shared_fd, injection_buf.len() as i64).unwrap();
         let shared_data = unsafe {
             mman::mmap(
                 0 as *mut std::ffi::c_void,
                 injection_buf.len(),
-                ProtFlags::PROT_WRITE,
+                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED,
                 shared_fd,
                 0,
@@ -473,8 +498,14 @@ impl ProcessManager {
                 injection_buf.len(),
             );
             mman::munmap(shared_data, injection_buf.len()).unwrap();
-            unistd::close(shared_fd).unwrap();
         }
+        unistd::chown(
+            "/dev/shm/stage_two",
+            Some(Uid::from_raw(1000)),
+            Some(Gid::from_raw(1000)),
+        )
+        .unwrap();
+        unistd::close(shared_fd).unwrap();
 
         self.write_anon(current_rip, shell_code_buf.as_slice())
             .unwrap();
