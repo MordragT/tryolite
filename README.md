@@ -1,3 +1,7 @@
+# I rewrote this library
+
+https://github.com/MordragT/injector
+
 # Tryolite
 
 This is a rust library, to easily change the memory of processes on linux.
